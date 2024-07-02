@@ -53,15 +53,15 @@ from utils.metric import (
 
 # ------ load hyperparameters ------ 
 parser = argparse.ArgumentParser(description="dHCP DL Surface Pipeline")
-parser.add_argument('--in_dir', default='./in_dir/', type=str,
+parser.add_argument('--in_dir', default=None, type=str,
                     help='Diectory containing input images.')
-parser.add_argument('--out_dir', default='./out_dir/', type=str,
+parser.add_argument('--out_dir', default=None, type=str,
                     help='Directory for saving the output of the pipeline.')
-parser.add_argument('--T2', default='_T2w.nii.gz', type=str,
+parser.add_argument('--T2', default=None, type=str,
                     help='Suffix of T2 image file.')
-parser.add_argument('--T1', default='_T1w.nii.gz', type=str,
+parser.add_argument('--T1', default=None, type=str,
                     help='Suffix of T1 image file.')
-parser.add_argument('--mask', default='_brainmask.nii.gz', type=str,
+parser.add_argument('--mask', default=None, type=str,
                     help='Suffix of brain mask file.')
 parser.add_argument('--device', default='cuda', type=str,
                     help='Device for running the pipeline: [cuda, cpu]')
@@ -84,9 +84,10 @@ min_regist_dice = 0.9
 # ribbon segmentation
 seg_ribbon = UNet(
     C_in=1, C_hid=[16,32,64,128,128], C_out=1).to(device)
+localfile = lambda s: os.path.join(os.path.dirname(__file__), *s.split(os.sep))
+segmodelfile = localfile("seg/model/model_seg.pt")
 seg_ribbon.load_state_dict(
-    torch.load('./seg/model/model_seg.pt',
-               map_location=device))
+    torch.load(segmodelfile, map_location=device))
 
 # surface reconstruction
 surf_recon_left_wm = MeshDeform(
@@ -103,16 +104,16 @@ surf_recon_right_pial = MeshDeform(
     interpolation='tricubic',device=device)
 
 surf_recon_left_wm.load_state_dict(
-    torch.load('./surface/model/model_hemi-left_wm.pt',
+    torch.load(localfile('surface/model/model_hemi-left_wm.pt'),
                map_location=device))
 surf_recon_right_wm.load_state_dict(
-    torch.load('./surface/model/model_hemi-right_wm.pt',
+    torch.load(localfile('surface/model/model_hemi-right_wm.pt'),
                map_location=device))
 surf_recon_left_pial.load_state_dict(
-    torch.load('./surface/model/model_hemi-left_pial.pt',
+    torch.load(localfile('surface/model/model_hemi-left_pial.pt'),
                map_location=device))
 surf_recon_right_pial.load_state_dict(
-    torch.load('./surface/model/model_hemi-right_pial.pt',
+    torch.load(localfile('surface/model/model_hemi-right_pial.pt'),
                map_location=device))
 
 # spherical projection
@@ -122,25 +123,25 @@ sphere_proj_right = SphereDeform(
     C_in=6, C_hid=[32, 64, 128, 256, 256], device=device)
 
 sphere_proj_left.load_state_dict(
-    torch.load('./sphere/model/model_hemi-left_sphere.pt',
+    torch.load(localfile('sphere/model/model_hemi-left_sphere.pt'),
                map_location=device))
 sphere_proj_right.load_state_dict(
-    torch.load('./sphere/model/model_hemi-right_sphere.pt',
+    torch.load(localfile('sphere/model/model_hemi-right_sphere.pt'),
                map_location=device))
 
 
 # ------ load image atlas ------
 img_t2_atlas_ants = ants.image_read(
-    './template/dhcp_week-40_template_T2w.nii.gz')
+    localfile('template/dhcp_week-40_template_T2w.nii.gz'))
 # both ants->nibabel and nibabel->ants need to reload the nifiti file
 # so here simply load the image again
 affine_t2_atlas = nib.load(
-    './template/dhcp_week-40_template_T2w.nii.gz').affine
+    localfile('template/dhcp_week-40_template_T2w.nii.gz')).affine
 
 
 # ------ load input surface ------
 surf_left_in = nib.load(
-    './template/dhcp_week-40_hemi-left_init.surf.gii')
+    localfile('template/dhcp_week-40_hemi-left_init.surf.gii'))
 vert_left_in = surf_left_in.agg_data('pointset')
 face_left_in = surf_left_in.agg_data('triangle')
 vert_left_in = apply_affine_mat(
@@ -151,7 +152,7 @@ vert_left_in = torch.Tensor(vert_left_in[None]).to(device)
 face_left_in = torch.LongTensor(face_left_in[None]).to(device)
 
 surf_right_in = nib.load(
-    './template/dhcp_week-40_hemi-right_init.surf.gii')
+    localfile('template/dhcp_week-40_hemi-right_init.surf.gii'))
 vert_right_in = surf_right_in.agg_data('pointset')
 face_right_in = surf_right_in.agg_data('triangle')
 vert_right_in = apply_affine_mat(
@@ -163,18 +164,18 @@ face_right_in = torch.LongTensor(face_right_in[None]).to(device)
 
 # ------ load input sphere ------
 sphere_left_in = nib.load(
-    './template/dhcp_week-40_hemi-left_sphere.surf.gii')
+    localfile('template/dhcp_week-40_hemi-left_sphere.surf.gii'))
 vert_sphere_left_in = sphere_left_in.agg_data('pointset')
 vert_sphere_left_in = torch.Tensor(vert_sphere_left_in[None]).to(device)
 
 sphere_right_in = nib.load(
-    './template/dhcp_week-40_hemi-right_sphere.surf.gii')
+    localfile('template/dhcp_week-40_hemi-right_sphere.surf.gii'))
 vert_sphere_right_in = sphere_right_in.agg_data('pointset')
 vert_sphere_right_in = torch.Tensor(vert_sphere_right_in[None]).to(device)
 
 
 # ------ load template sphere (160k) ------
-sphere_160k = nib.load('./template/sphere_163842.surf.gii')
+sphere_160k = nib.load(localfile('template/sphere_163842.surf.gii'))
 vert_sphere_160k = sphere_160k.agg_data('pointset')
 face_160k = sphere_160k.agg_data('triangle')
 vert_sphere_160k = torch.Tensor(vert_sphere_160k[None]).to(device)
@@ -183,11 +184,11 @@ face_160k = torch.LongTensor(face_160k[None]).to(device)
 
 # ------ load pre-computed barycentric coordinates ------
 # for sphere interpolation
-barycentric_left = nib.load('./template/dhcp_week-40_hemi-left_barycentric.gii')
+barycentric_left = nib.load(localfile('template/dhcp_week-40_hemi-left_barycentric.gii'))
 bc_coord_left = barycentric_left.agg_data('pointset')
 face_left_id = barycentric_left.agg_data('triangle')
 
-barycentric_right = nib.load('./template/dhcp_week-40_hemi-right_barycentric.gii')
+barycentric_right = nib.load(localfile('template/dhcp_week-40_hemi-right_barycentric.gii'))
 bc_coord_right = barycentric_right.agg_data('pointset')
 face_right_id = barycentric_right.agg_data('triangle')
 
@@ -197,7 +198,7 @@ if __name__ == '__main__':
     subj_list = sorted(glob.glob(in_dir))
     for subj_in_dir in tqdm(subj_list):
         # check existence of all directories
-        subj_id = subj_in_dir.split('/')[-2]
+        subj_id = subj_in_dir.split(os.sep)[-2]
         subj_t2_dir = subj_in_dir + subj_id + t2_suffix
         subj_t1_dir = ''
         subj_mask_dir = ''
@@ -210,6 +211,7 @@ if __name__ == '__main__':
         if not os.path.exists(subj_t2_dir):
             # if the T2 image does not exist
             print("T2 image does not exist.")
+            print(subj_t2_dir)
             continue
         if os.path.exists(subj_t1_dir):
             t1_exists = True

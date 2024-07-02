@@ -1,0 +1,19 @@
+name: dhcp
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - mkl==2022.1.0
+  - nibabel==5.0.1
+  - pip 
+  - python
+  - pytorch==1.13.1
+  - pytorch-cuda=11.6
+  - scipy==1.10.1
+  - torchaudio==0.13.1
+  - torchvision==0.14.1
+  - tqdm
+  - pip:
+    - antspyx==0.3.8
+

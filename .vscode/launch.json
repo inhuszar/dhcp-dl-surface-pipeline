@@ -1,0 +1,24 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--in_dir", "/autofs/vast/lzgroup/Users/IstvanHuszar/proc/dhcp3/dl.surface/sub-CC00201XX03_ses-67600/",
+                "--out_dir", "/autofs/vast/lzgroup/Users/IstvanHuszar/results/dhcp3/dl.surface/",
+                "--T2", "_T2w.nii.gz",
+                "--T1", "_T1w.nii.gz",
+                "--mask", "_desc-brain_mask.nii.gz",
+                "--device", "cuda:0"
+            ]
+        }
+    ]
+}
