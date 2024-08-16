@@ -18,9 +18,11 @@ def _spherical_projection(device, weights):
 def load(device):
 
     left = _spherical_projection(
-        device, resource('sphere/model/model_hemi-left_sphere.pt'))
+        device, resource("sphere/model/model_hemi-left_sphere.pt")
+    )
     right = _spherical_projection(
-        device, resource('sphere/model/model_hemi-right_sphere.pt'))
+        device, resource("sphere/model/model_hemi-right_sphere.pt")
+    )
 
     return SimpleNamespace(
         left=left,

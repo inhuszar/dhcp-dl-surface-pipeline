@@ -8,6 +8,7 @@ from typing import Callable
 
 # IMPLEMENTATION
 
+
 class Timer(object):
 
     def __init__(self, precision: int = 1, print_fn: Callable = print):
@@ -16,6 +17,7 @@ class Timer(object):
 
     def __enter__(self):
         self.start_time = time.time()
+        self.print_fn("-" * 80)  # Section break indicator
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):

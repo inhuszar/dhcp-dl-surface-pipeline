@@ -11,5 +11,6 @@ def load(device):
         C_out=1,
     ).to(device)
     model.load_state_dict(
-        torch.load(resource("seg/model/model_seg.pt"), map_location=device))
+        torch.load(resource("seg/model/model_seg.pt"), map_location=device)
+    )
     return model

@@ -2,27 +2,26 @@
 
 # IMPORTS
 
-import argparse
-import logging
 import os
-import shutil
 import sys
 import time
+import shutil
+import logging
+import argparse
+import numpy as np
+import nibabel as nib
 from types import SimpleNamespace
 
-import nibabel as nib
-import numpy as np
-import torch
-
 import ants
+import torch
 
 import ddsp.seg
 import ddsp.surface
+import ddsp.sphere
+
 from ddsp import template
 from ddsp.utils.timer import Timer
 from ddsp.volume.volume import Volume
-
-
 
 from ddsp.sphere.net.loss import (
     edge_distortion,
@@ -75,6 +74,7 @@ def main(args):
         raise AssertionError("Missing inputs.")
 
     # Run pipeline
+    t_start = time.time()
     logger.info("Starting pipeline...")
 
     # Load data
@@ -86,6 +86,10 @@ def main(args):
     # Load templates
     templates = SimpleNamespace(
         t2_atlas=template.load_t2_atlas(),
+        initial_surfaces=template.load_surface_template(),
+        input_spheres=template.load_input_sphere(args.device),
+        template_sphere=template.load_template_sphere(args.device),
+        barycentric_coordinates=template.load_barycentric_coordinates(),
     )
 
     # Compute T1w/T2w ratio
@@ -97,32 +101,38 @@ def main(args):
             # Save T1w/T2w ratio as a NIfTI volume
             try:
                 ratio_output = os.path.join(
-                    args.out_dir, "T1wDividedByT2w.nii.gz")
+                    args.out_dir, "T1wDividedByT2w.nii.gz"
+                )
                 save_numpy_to_nifti(
-                    t1t2_ratio, t2_original.affine(), ratio_output)
+                    t1t2_ratio, t2_original.affine(), ratio_output
+                )
             except Exception as exc:
                 # Non-breaking exception
                 logger.error(
-                    f"ERROR: Failed to save T1w/T2w ratio: {ratio_output}")
+                    f"ERROR: Failed to save T1w/T2w ratio: {ratio_output}"
+                )
                 logger.error(str(exc))
             else:
                 logger.info(f"SAVED: {ratio_output}")
 
     # Bias field correction
     with Timer(print_fn=logger.info) as timer:
-        logger.info('Starting bias field correction...')
+        logger.info("Starting bias field correction...")
         t2_restore = bias_field_correction(t2_original, args.verbose)
-        logger.info("Completed T2 bias field correction.")
+        logger.info("Completed T2w bias field correction.")
         # Save brain-extracted and bias-corrected T2w image
         try:
             restore_output = os.path.join(
-                args.out_dir, "T2w_restore_brain.nii.gz")
+                args.out_dir, "T2w_restore_brain.nii.gz"
+            )
             save_numpy_to_nifti(
-                t2_restore.data(), t2_original.affine(), restore_output)
+                t2_restore.data(), t2_original.affine(), restore_output
+            )
         except Exception as exc:
             # Non-breaking exception
             logger.error(
-                f"ERROR: Failed to save bias-corrected T2: {restore_output}")
+                f"ERROR: Failed to save bias-corrected T2w: {restore_output}"
+            )
             logger.error(str(exc))
         else:
             logger.info(f"SAVED: {restore_output}")
@@ -142,7 +152,7 @@ def main(args):
     with Timer(print_fn=logger.info) as timer:
         logger.info("Cortical ribbon segmentation starts...")
         ribbon_original = cortical_ribbon_segmentation(
-        t2_original=t2_original,
+            t2_original=t2_original,
             t2_aligned=t2_aligned,
             t2_atlas=templates.t2_atlas,
             antstx=antstx,
@@ -153,12 +163,14 @@ def main(args):
         try:
             ribbon_output = os.path.join(args.out_dir, "ribbon.nii.gz")
             save_numpy_to_nifti(
-                ribbon_original, t2_original.affine(), ribbon_output)
+                ribbon_original, t2_original.affine(), ribbon_output
+            )
         except Exception as exc:
             # Non-breaking exception
             logger.error(
                 f"ERROR: Failed to save cortical ribbon segmentation: "
-                f"{ribbon_original}")
+                f"{ribbon_original}"
+            )
             logger.error(str(exc))
         else:
             logger.info(f"SAVED: {ribbon_output}")
@@ -167,9 +179,69 @@ def main(args):
     with Timer(print_fn=logger.info) as timer:
         for hemi in ("left", "right"):
             logger.info(f"Starting ({hemi}) cortical surface reconstruction...")
-            surface_reconstruction(t2_aligned, hemi=hemi, device=args.device)
+            vertices, vert_wm, vert_wm_orig, faces = surface_reconstruction(
+                t2_aligned,
+                templates,
+                hemi=hemi,
+                outputdir=args.out_dir,
+                device=args.device,
+            )
         else:
             logger.info(f"Completed cortical surface reconstruction.")
+
+    # Surface inflation
+    with Timer(print_fn=logger.info) as timer:
+        for hemi in ("left", "right"):
+            logger.info(f"Starting ({hemi}) cortical surface inflation...")
+            inflated_vertices, inflated_faces = surface_inflation(
+                vertices,
+                faces,
+                hemi=hemi,
+                outputdir=args.out_dir,
+                device=args.device,
+            )
+        else:
+            logger.info(f"Completed cortical surface inflation.")
+
+    # Spherical projection
+    with Timer(print_fn=logger.info) as timer:
+        for hemi in ("left", "right"):
+            logger.info(f"Starting ({hemi}) spherical projection...")
+            spherical_projection(
+                vertices,
+                vert_wm_orig,
+                faces,
+                templates,
+                hemi=hemi,
+                outputdir=args.out_dir,
+                device=args.device,
+            )
+        else:
+            logger.info(f"Completed spherical projection.")
+
+    # Cortical feature estimation
+    with Timer(print_fn=logger.info) as timer:
+        for hemi in ("left", "right"):
+            logger.info(f"Starting ({hemi}) cortical feature estimation...")
+            cortical_feature_estimation(
+                t1_original,
+                vertices,
+                faces,
+                hemi=hemi,
+                outputdir=args.out_dir,
+                device=args.device,
+            )
+        else:
+            logger.info(f"Completed cortical feature estimation.")
+
+    # Conclusion
+    t_end = time.time()
+    conclude(outputdir=args.out_dir)
+    logger.info("----------------------------------------")
+    logger.info(
+        "Finished. Total runtime: {} sec.".format(np.round(t_end - t_start, 4))
+    )
+    logger.info("========================================")
 
 
 def verify_inputs(args) -> bool:
@@ -182,16 +254,16 @@ def verify_inputs(args) -> bool:
     # T1
     if args.t1 is None or not os.path.exists(args.t1):
         logger.warning(f"T1 input does not exist: {args.t2}")
-        inputs_ok = True
     else:
         args.t1 = os.path.abspath(args.t1)
+        inputs_ok = True
 
     # T2
     if args.t2 is None or not os.path.exists(args.t2):
         logger.warning(f"T2 input does not exist: {args.t2}")
-        inputs_ok = True
     else:
         args.t2 = os.path.abspath(args.t2)
+        inputs_ok = True
 
     return inputs_ok
 
@@ -243,12 +315,9 @@ def bias_field_correction(t2_original: Volume, verbose: bool = False) -> Volume:
         t2_original.antsvol(apply_mask=False),
         mask=t2_original.antsvol(data=t2_original.mask, apply_mask=False),
         shrink_factor=4,
-        convergence={
-            "iters": [50, 50, 50],
-            "tol": 0.001
-        },
+        convergence={"iters": [50, 50, 50], "tol": 0.001},
         spline_param=100,
-        verbose=verbose
+        verbose=verbose,
     )
     return Volume(
         antsvol=t2_restore_ants,
@@ -258,33 +327,33 @@ def bias_field_correction(t2_original: Volume, verbose: bool = False) -> Volume:
 
 
 def affine_registration(
-        t2_restore: Volume,
-        t2_atlas: Volume,
-        outputdir: str,
-        verbose: bool = False
+    t2_restore: Volume, t2_atlas: Volume, outputdir: str, verbose: bool = False
 ) -> tuple[Volume, SimpleNamespace]:
 
     # ANTs affine registration
-    img_t2_align_ants, affine_t2_align, ants_rigid, \
-        ants_affine, align_dice = registration(
-        img_move_ants=t2_restore.antsvol(apply_mask=True),
-        img_fix_ants=t2_atlas.antsvol(apply_mask=False),
-        affine_fix=t2_atlas.affine(),
-        out_prefix=outputdir,
-        max_iter=MAX_REGIST_ITER,
-        min_dice=MIN_REGIST_DICE,
-        verbose=verbose,
+    img_t2_align_ants, affine_t2_align, ants_rigid, ants_affine, align_dice = (
+        registration(
+            img_move_ants=t2_restore.antsvol(apply_mask=True),
+            img_fix_ants=t2_atlas.antsvol(apply_mask=False),
+            affine_fix=t2_atlas.affine(),
+            out_prefix=outputdir,
+            max_iter=MAX_REGIST_ITER,
+            min_dice=MIN_REGIST_DICE,
+            verbose=verbose,
+        )
     )
 
     # Check Dice score
     if align_dice >= MIN_REGIST_DICE:
         logger.info(
             f"SUCCESS: Dice after registration: {align_dice} "
-            f">= {MIN_REGIST_DICE}")
+            f">= {MIN_REGIST_DICE}"
+        )
     else:
         logger.error(
             f"ERROR: Expected Dice>{MIN_REGIST_DICE} after affine "
-            f"registration, got Dice={align_dice}.")
+            f"registration, got Dice={align_dice:.03f}."
+        )
 
     # Create NIfTI header using the affine
     hdr_aligned = nib.Nifti1Header()
@@ -302,11 +371,11 @@ def affine_registration(
 
 
 def cortical_ribbon_segmentation(
-        t2_original: Volume,
-        t2_aligned: Volume,
-        t2_atlas: Volume,
-        antstx: SimpleNamespace,
-        device: str
+    t2_original: Volume,
+    t2_aligned: Volume,
+    t2_atlas: Volume,
+    antstx: SimpleNamespace,
+    device: str,
 ) -> Volume:
 
     # Input volume for nn model
@@ -321,7 +390,8 @@ def cortical_ribbon_segmentation(
     with torch.no_grad():
         ribbon_pred = torch.sigmoid(seg_model(tensor_in))
     ribbon_aligned_ants = t2_aligned.antsvol(
-        data=ribbon_pred[0, 0].cpu().numpy(), apply_mask=False)
+        data=ribbon_pred[0, 0].cpu().numpy(), apply_mask=False
+    )
 
     # Transform back to original space
     ribbon_orig_ants = ants.apply_transforms(
@@ -329,20 +399,20 @@ def cortical_ribbon_segmentation(
         moving=ribbon_aligned_ants,
         transformlist=antstx.affine["invtransforms"],
         whichtoinvert=[True],
-        interpolator="linear"
+        interpolator="linear",
     )
     ribbon_orig_ants = ants.apply_transforms(
         fixed=t2_original.antsvol(apply_mask=False),
         moving=ribbon_orig_ants,
         transformlist=antstx.rigid["invtransforms"],
         whichtoinvert=[True],
-        interpolator="linear"
+        interpolator="linear",
     )
 
     # Threshold to create a binary ribbon segmentation
     ribbon_original = t2_original.antsvol(
         data=(ribbon_orig_ants.numpy() > 0.5).astype(np.float32),
-        apply_mask=False
+        apply_mask=False,
     )
 
     return Volume(
@@ -352,45 +422,38 @@ def cortical_ribbon_segmentation(
     )
 
 
-def surface_reconstruction(t2_aligned: Volume, hemi: str, device: str):
+def surface_reconstruction(
+    t2_aligned: Volume,
+    templates: SimpleNamespace,
+    hemi: str,
+    outputdir: str,
+    device: str,
+):
 
     # Set model
     surf_recon_models = ddsp.surface.load(device=device)
     surf_recon_wm = vars(surf_recon_models)[hemi].wm
     surf_recon_pial = vars(surf_recon_models)[hemi].pial
 
-    # Input vertices and faces
+    # Volume
+    vol_in = torch.Tensor(t2_aligned.data()[None, None]).to(device)
+    vol_in = dict(left=vol_in[:, :, 64:], right=vol_in[:, :, :112])[hemi]
 
+    # Vertices
+    surf_in = vars(templates.initial_surfaces)[hemi]
+    vert_in = surf_in.agg_data("pointset")
+    vert_in = apply_affine_mat(
+        vert_in, np.linalg.inv(templates.t2_atlas.affine())
+    )
+    vert_in = dict(left=vert_in - [64, 0, 0], right=vert_in)[hemi]
+    vert_in = torch.Tensor(vert_in[None]).to(device)
 
-    tensor_t2_aligned = torch.Tensor(t2_aligned.data()[None, None]).to(device)
-    if hemi == "left":
-        tensor_in = tensor_t2_aligned[:, :, 64:]
-        vert_left_in = surf_left_in.agg_data('pointset')
-        face_left_in = surf_left_in.agg_data('triangle')
-        vert_left_in = apply_affine_mat(
-            vert_left_in, np.linalg.inv(affine_t2_atlas))
-        vert_left_in = vert_left_in - [64, 0, 0]
-        face_left_in = face_left_in[:, [2, 1, 0]]
-        vert_left_in = torch.Tensor(vert_left_in[None]).to(device)
-        face_left_in = torch.LongTensor(face_left_in[None]).to(device)
+    # Faces
+    face_in = surf_in.agg_data("triangle")
+    face_in = face_in[:, [2, 1, 0]]
+    face_in = torch.LongTensor(face_in[None]).to(device)
 
-
-        # clip the left hemisphere
-        vol_in = vol_t2_align[:, :, 64:]
-        vert_in = vert_left_in
-        face_in = face_left_in
-
-    elif hemi == 'right':
-
-
-
-
-        # clip the right hemisphere
-        vol_in = vol_t2_align[:, :, :112]
-        vert_in = vert_right_in
-        face_in = face_right_in
-
-    # wm and pial surfaces reconstruction
+    # WM and pial surface reconstruction
     with torch.no_grad():
         vert_wm = surf_recon_wm(vert_in, vol_in, n_steps=7)
         vert_wm = cot_laplacian_smooth(vert_wm, face_in, n_iters=1)
@@ -402,236 +465,269 @@ def surface_reconstruction(t2_aligned: Volume, hemi: str, device: str):
     vert_pial_align = vert_pial[0].cpu().numpy()
     face_align = face_in[0].cpu().numpy()
 
-    # transform vertices to original space
-    if surf_hemi == 'left':
-        # pad the left hemisphere to full brain
-        vert_wm_orig = vert_wm_align + [64, 0, 0]
-        vert_pial_orig = vert_pial_align + [64, 0, 0]
-    elif surf_hemi == 'right':
-        vert_wm_orig = vert_wm_align.copy()
-        vert_pial_orig = vert_pial_align.copy()
-    vert_wm_orig = apply_affine_mat(
-        vert_wm_orig, affine_t2_align)
-    vert_pial_orig = apply_affine_mat(
-        vert_pial_orig, affine_t2_align)
+    # Transform vertices to original space
+    vert_wm_orig = dict(
+        left=vert_wm_align + [64, 0, 0],
+        right=vert_wm_align.copy(),
+    )[hemi]
+    vert_pial_orig = dict(
+        left=vert_pial_align + [64, 0, 0],
+        right=vert_pial_align.copy(),
+    )[hemi]
+    vert_wm_orig = apply_affine_mat(vert_wm_orig, t2_aligned.affine())
+    vert_pial_orig = apply_affine_mat(vert_pial_orig, t2_aligned.affine())
     face_orig = face_align[:, [2, 1, 0]]
-    # midthickness surface
+
+    # Mid-thickness surface
     vert_mid_orig = (vert_wm_orig + vert_pial_orig) / 2
 
-    # save as .surf.gii
+    # Save surfaces in GIfTI format
+    # WM surface
     save_gifti_surface(
-        vert_wm_orig, face_orig,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_wm.surf.gii',
-        surf_hemi=surf_hemi, surf_type='wm')
+        vert_wm_orig,
+        face_orig,
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_wm.surf.gii"),
+        hemi=hemi,
+        surf_type="wm",
+    )
+    # Pial surface
     save_gifti_surface(
-        vert_pial_orig, face_orig,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_pial.surf.gii',
-        surf_hemi=surf_hemi, surf_type='pial')
+        vert_pial_orig,
+        face_orig,
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_pial.surf.gii"),
+        hemi=hemi,
+        surf_type="pial",
+    )
+    # Mid-thickness surface
     save_gifti_surface(
-        vert_mid_orig, face_orig,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_midthickness.surf.gii',
-        surf_hemi=surf_hemi, surf_type='midthickness')
+        vert_mid_orig,
+        face_orig,
+        gifti_path=os.path.join(
+            outputdir, f"hemi-{hemi}_midthickness.surf.gii"
+        ),
+        hemi=hemi,
+        surf_type="midthickness",
+    )
 
-        # send to gpu for the following processing
-        vert_wm = torch.Tensor(vert_wm_orig).unsqueeze(0).to(device)
-        vert_pial = torch.Tensor(vert_pial_orig).unsqueeze(0).to(device)
-        vert_mid = torch.Tensor(vert_mid_orig).unsqueeze(0).to(device)
-        face = torch.LongTensor(face_orig).unsqueeze(0).to(device)
+    # Generate output: on-device tensors for further processing
+    vertices = SimpleNamespace(
+        wm=torch.Tensor(vert_wm_orig).unsqueeze(0).to(device),
+        pial=torch.Tensor(vert_pial_orig).unsqueeze(0).to(device),
+        mid=torch.Tensor(vert_mid_orig).unsqueeze(0).to(device),
+    )
+    faces = torch.LongTensor(face_orig).unsqueeze(0).to(device)
 
-        t_surf_end = time.time()
-        t_surf = t_surf_end - t_surf_start
-        logger.info(
-            'Surface reconstruction ({}) ends. Runtime: {} sec.'.format(
-                surf_hemi, np.round(t_surf, 4)))
-
-        # ------ Surface Inflation ------
-        logger.info('----------------------------------------')
-        logger.info('Surface inflation ({}) starts ...'.format(surf_hemi))
-        t_inflate_start = time.time()
-
-        # create inflated and very_inflated surfaces
-        # if device is cpu, use wb_command for inflation (faster)
-        if device == 'cpu':
-            vert_inflated_orig, vert_vinflated_orig = \
-                wb_generate_inflated_surfaces(
-                    subj_out_dir, surf_hemi, iter_scale=3.0)
-        else:  # cuda acceleration
-            vert_inflated, vert_vinflated = generate_inflated_surfaces(
-                vert_mid, face, iter_scale=3.0)
-            vert_inflated_orig = vert_inflated[0].cpu().numpy()
-            vert_vinflated_orig = vert_vinflated[0].cpu().numpy()
-
-        # save as .surf.gii
-        save_gifti_surface(
-            vert_inflated_orig, face_orig,
-            save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_inflated.surf.gii',
-            surf_hemi=surf_hemi, surf_type='inflated')
-        save_gifti_surface(
-            vert_vinflated_orig, face_orig,
-            save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_vinflated.surf.gii',
-            surf_hemi=surf_hemi, surf_type='vinflated')
-
-        t_inflate_end = time.time()
-        t_inflate = t_inflate_end - t_inflate_start
-        logger.info('Surface inflation ({}) ends. Runtime: {} sec.'.format(
-            surf_hemi, np.round(t_inflate, 4)))
+    return vertices, vert_wm, vert_wm_orig, faces
 
 
-def spherical_projection():
+def surface_inflation(
+    vertices: SimpleNamespace,
+    faces: torch.LongTensor,
+    hemi: str,
+    outputdir: str,
+    device: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Create inflated and very inflated surfaces.
 
+    """
+    # If device is cpu, use wb_command for inflation (faster)
+    if device == "cpu":
+        vert_inflated_orig, vert_vinflated_orig = wb_generate_inflated_surfaces(
+            outputdir, hemi, iter_scale=3.0
+        )
+    else:  # cuda acceleration
+        vert_inflated, vert_vinflated = generate_inflated_surfaces(
+            vertices.mid, faces, iter_scale=3.0
+        )
+        vert_inflated_orig = vert_inflated[0].cpu().numpy()
+        vert_vinflated_orig = vert_vinflated[0].cpu().numpy()
+
+    # Save inflated surfaces as .surf.gii
+    face_orig = faces[0].cpu().numpy()
+    save_gifti_surface(
+        vert_inflated_orig,
+        face_orig,
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_inflated.surf.gii"),
+        hemi=hemi,
+        surf_type="inflated",
+    )
+    save_gifti_surface(
+        vert_vinflated_orig,
+        face_orig,
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_vinflated.surf.gii"),
+        hemi=hemi,
+        surf_type="vinflated",
+    )
+
+    return vert_inflated_orig, vert_vinflated_orig
+
+
+def spherical_projection(
+    vertices: SimpleNamespace,
+    vert_wm_orig,
+    faces: torch.LongTensor,
+    templates: SimpleNamespace,
+    hemi: str,
+    outputdir: str,
+    device: str,
+):
     # Set model, input vertices and faces
-    if surf_hemi == 'left':
-        sphere_proj = sphere_proj_left
-        vert_sphere_in = vert_sphere_left_in
-        bc_coord = bc_coord_left
-        face_id = face_left_id
-    elif surf_hemi == 'right':
-        sphere_proj = sphere_proj_right
-        vert_sphere_in = vert_sphere_right_in
-        bc_coord = bc_coord_right
-        face_id = face_right_id
+    sp_model = ddsp.sphere.load(device)
+    vert_sphere_in = getattr(templates.input_spheres, hemi)
+    bc_coord = getattr(templates.barycentric_coordinates.vertices, hemi)
+    face_id = getattr(templates.barycentric_coordinates.faces, hemi)
+    vert_sphere_160k = templates.template_sphere.vertices
 
-    # interpolate to 160k template
+    # Interpolate to 160k template
     vert_wm_160k = (vert_wm_orig[face_id] * bc_coord[..., None]).sum(-2)
     vert_wm_160k = torch.Tensor(vert_wm_160k[None]).to(device)
     feat_160k = torch.cat([vert_sphere_160k, vert_wm_160k], dim=-1)
 
     with torch.no_grad():
-        vert_sphere = sphere_proj(
-            feat_160k, vert_sphere_in, n_steps=7)
+        vert_sphere = sp_model(feat_160k, vert_sphere_in, n_steps=7)
 
     # compute metric distortion
-    edge = torch.cat([
-        face[0, :, [0, 1]],
-        face[0, :, [1, 2]],
-        face[0, :, [2, 0]]], dim=0).T
-    edge_distort = 100. * edge_distortion(
-        vert_sphere, vert_wm, edge).item()
-    area_distort = 100. * area_distortion(
-        vert_sphere, vert_wm, face).item()
-    logger.info(
-        'Edge distortion: {}%'.format(np.round(edge_distort, 2)))
-    logger.info(
-        'Area distortion: {}%'.format(np.round(area_distort, 2)))
+    edge = torch.cat(
+        [faces[0, :, [0, 1]], faces[0, :, [1, 2]], faces[0, :, [2, 0]]], dim=0
+    ).T
+    edge_distort = (
+        100.0 * edge_distortion(vert_sphere, vertices.wm, edge).item()
+    )
+    area_distort = (
+        100.0 * area_distortion(vert_sphere, vertices.wm, faces).item()
+    )
+    logger.info("Edge distortion: {}%".format(np.round(edge_distort, 2)))
+    logger.info("Area distortion: {}%".format(np.round(area_distort, 2)))
 
     # save as .surf.gii
     vert_sphere = vert_sphere[0].cpu().numpy()
     save_gifti_surface(
-        vert_sphere, face_orig,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_sphere.surf.gii',
-        surf_hemi=surf_hemi, surf_type='sphere')
-
-    t_sphere_end = time.time()
-    t_sphere = t_sphere_end - t_sphere_start
-    logger.info('Spherical mapping ({}) ends. Runtime: {} sec.'.format(
-        surf_hemi, np.round(t_sphere, 4)))
+        vert_sphere,
+        faces.numpy()[0],
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_sphere.surf.gii"),
+        hemi=hemi,
+        surf_type="sphere",
+    )
 
 
-def cortical_feature_estimation():
-
-    logger.info('Estimate cortical thickness ...', end=' ')
-    thickness = cortical_thickness(vert_wm, vert_pial)
+def cortical_feature_estimation(
+    t1_original,
+    vertices,
+    faces: torch.LongTensor,
+    hemi: str,
+    outputdir: str,
+    device: str,
+):
+    logger.info("Estimating cortical thickness...")
+    thickness = cortical_thickness(vertices.wm, vertices.pial)
     thickness = metric_dilation(
         torch.Tensor(thickness[None, :, None]).to(device),
-        face, n_iters=10)
+        faces,
+        n_iters=10,
+    )
     save_gifti_metric(
         metric=thickness,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_thickness.shape.gii',
-        surf_hemi=surf_hemi, metric_type='thickness')
-    logger.info('Done.')
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_thickness.shape.gii"),
+        hemi=hemi,
+        metric_type="thickness",
+    )
+    logger.info("Done.")
 
-    logger.info('Estimate curvature ...', end=' ')
-    curv = curvature(vert_wm, face, smooth_iters=5)
+    logger.info("Estimating curvature...")
+    curv = curvature(vertices.wm, faces, smooth_iters=5)
     save_gifti_metric(
         metric=curv,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_curv.shape.gii',
-        surf_hemi=surf_hemi, metric_type='curv')
-    logger.info('Done.')
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_curv.shape.gii"),
+        hemi=hemi,
+        metric_type="curv",
+    )
+    logger.info("Done.")
 
-    logger.info('Estimate sulcal depth ...', end=' ')
-    sulc = sulcal_depth(vert_wm, face, verbose=False)
+    logger.info("Estimating sulcal depth...")
+    sulc = sulcal_depth(vertices.wm, faces, verbose=False)
     save_gifti_metric(
         metric=sulc,
-        save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_sulc.shape.gii',
-        surf_hemi=surf_hemi, metric_type='sulc')
-    logger.info('Done.')
+        gifti_path=os.path.join(outputdir, f"hemi-{hemi}_sulc.shape.gii"),
+        hemi=hemi,
+        metric_type="sulc",
+    )
+    logger.info("Done.")
 
-    # estimate myelin map based on
-    # t1-to-t2 ratio, midthickness surface,
-    # cortical thickness and cortical ribbon
-
-    if t1_exists:
-        logger.info('Estimate myelin map ...', end=' ')
-        myelin = myelin_map(
-            subj_dir=subj_out_dir, surf_hemi=surf_hemi)
+    # Estimate myelin map, based on the T1w/T2w ratio,
+    # the mid-thickness surface, the cortical thickness,
+    # and the cortical ribbon.
+    if t1_original is not None:
+        logger.info("Estimating myelin map...")
+        myelin = myelin_map(subj_dir=outputdir, hemi=hemi)
         # metric dilation
         myelin = metric_dilation(
             torch.Tensor(myelin[None, :, None]).to(device),
-            face, n_iters=10)
+            faces,
+            n_iters=10,
+        )
         # save myelin map
         save_gifti_metric(
             metric=myelin,
-            save_dir=subj_out_dir + '_hemi-' + surf_hemi + '_myelinmap.shape.gii',
-            surf_hemi=surf_hemi, metric_type='myelinmap')
+            gifti_path=os.path.join(
+                outputdir, f"hemi-{hemi}_myelinmap.shape.gii"
+            ),
+            hemi=hemi,
+            metric_type="myelinmap",
+        )
 
         # smooth myelin map
-        smoothed_myelin = smooth_myelin_map(
-            subj_dir=subj_out_dir, surf_hemi=surf_hemi)
+        smoothed_myelin = smooth_myelin_map(subj_dir=outputdir, hemi=hemi)
         save_gifti_metric(
             metric=smoothed_myelin,
-            save_dir=subj_out_dir + '_hemi-' + surf_hemi + \
-                     '_smoothed_myelinmap.shape.gii',
-            surf_hemi=surf_hemi,
-            metric_type='smoothed_myelinmap')
-        logger.info('Done.')
-
-    t_feature_end = time.time()
-    t_feature = t_feature_end - t_feature_start
-    logger.info('Feature estimation ({}) ends. Runtime: {} sec.'.format(
-        surf_hemi, np.round(t_feature, 4)))
+            gifti_path=os.path.join(
+                outputdir, f"hemi-{hemi}_smoothed_myelinmap.shape.gii"
+            ),
+            hemi=hemi,
+            metric_type="smoothed_myelinmap",
+        )
+        logger.info("Done.")
 
 
-def conclude():
-    logger.info('----------------------------------------')
-    # clean temp data
-    os.remove(subj_out_dir + '_rigid_0GenericAffine.mat')
-    os.remove(subj_out_dir + '_affine_0GenericAffine.mat')
-    os.remove(subj_out_dir + '_ribbon.nii.gz')
-    if os.path.exists(subj_out_dir + '_T1wDividedByT2w.nii.gz'):
-        os.remove(subj_out_dir + '_T1wDividedByT2w.nii.gz')
-    # create .spec file for visualization
-    create_wb_spec(subj_out_dir)
-    t_end = time.time()
-    logger.info('Finished. Total runtime: {} sec.'.format(
-        np.round(t_end - t_start, 4)))
-    logger.info('========================================')
+def conclude(outputdir: str):
+    # Clean temporary files
+    os.remove(os.path.join(outputdir, "rigid_0GenericAffine.mat"))
+    os.remove(os.path.join(outputdir, "affine_0GenericAffine.mat"))
+    os.remove(os.path.join(outputdir, "ribbon.nii.gz"))
+    try:
+        os.remove(os.path.join(outputdir, "T1wDividedByT2w.nii.gz"))
+    except FileNotFoundError:
+        pass
+
+    # Create .spec file for visualization
+    create_wb_spec(outputdir)
 
 
 def create_cli():
     parser = argparse.ArgumentParser(description="dHCP DL Surface Pipeline")
     parser.add_argument(
-        '--t2', default=None, type=str,
-        help='Suffix of T2 image file.'
+        "--t2", default=None, type=str, help="Suffix of T2 image file."
     )
     parser.add_argument(
-        '--t1', default=None, type=str,
-        help='Suffix of T1 image file.'
+        "--t1", default=None, type=str, help="Suffix of T1 image file."
     )
     parser.add_argument(
-        '--mask', default=None, type=str,
-        help='Suffix of brain mask file.'
+        "--mask", default=None, type=str, help="Suffix of brain mask file."
     )
     parser.add_argument(
-        '--out_dir', default=None, type=str,
-        help='Directory for saving the output of the pipeline.'
+        "--out_dir",
+        default=None,
+        type=str,
+        help="Directory for saving the output of the pipeline.",
     )
     parser.add_argument(
-        '--device', default='cuda', type=str,
-        help='Device for running the pipeline: [cuda, cpu]'
+        "--device",
+        default="cuda",
+        type=str,
+        help="Device for running the pipeline: [cuda, cpu]",
     )
     parser.add_argument(
-        '--verbose', action='store_true',
-        help='Print debugging information.'
+        "--verbose", action="store_true", help="Print debugging information."
     )
     return parser
 
@@ -644,7 +740,12 @@ def configure_output_directory(args):
         os.makedirs(args.out_dir, exist_ok=False)
 
 
-def create_logger(outputdir, level=LOGLEVEL, mode=LOGMODE):
+def create_logger(
+    outputdir: str,
+    verbose: bool = False,
+    level: int = LOGLEVEL,
+    mode: str = LOGMODE,
+):
     """
     Creates a suitably configured Logger instance.
 
@@ -653,9 +754,10 @@ def create_logger(outputdir, level=LOGLEVEL, mode=LOGMODE):
     logger.handlers = []  # delete any existing handlers to avoid duplicate logs
     logger.setLevel(1)
     formatter = logging.Formatter(
-        fmt='%(asctime)s Process-%(process)d %(levelname)s (%(lineno)d) '
-            '- %(message)s',
-        datefmt='[%Y-%m-%d %H:%M:%S]')
+        fmt="%(asctime)s Process-%(process)d %(levelname)s (%(lineno)d) "
+        "- %(message)s",
+        datefmt="[%Y-%m-%d %H:%M:%S]",
+    )
 
     # Redirect all logs of interest to the specified logfile
     logfile = os.path.join(outputdir, "logfile.log")
@@ -677,12 +779,12 @@ def create_logger(outputdir, level=LOGLEVEL, mode=LOGMODE):
 
 
 # ------ Run dHCP DL-based surface pipeline ------
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = create_cli()
     if len(sys.argv) > 1:
         args = parser.parse_args()
         configure_output_directory(args)
-        logger = create_logger(args.out_dir)
+        logger = create_logger(args.out_dir, args.verbose)
         main(args)
     else:
         parser.print_help()
