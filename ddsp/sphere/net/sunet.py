@@ -8,21 +8,19 @@ https://github.com/zhaofenqiang/SphericalUNetPackage/
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
 import nibabel as nib
 
-from sphere.net.layers import (
+from ddsp.sphere.net.layers import (
     conv_block,
     conv_layer,
     pool_layer,
     upconv_layer)
 
-from sphere.net.interp import (
+from ddsp.sphere.net.interp import (
     sphere_interpolate,
     get_bi_interp)
 
-from sphere.net.utils import (
+from ddsp.sphere.net.utils import (
     get_neighs_order,
     get_upconv_index)
 

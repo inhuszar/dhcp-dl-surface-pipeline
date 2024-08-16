@@ -3,14 +3,13 @@ import numpy as np
 import nibabel as nib
 import subprocess
 import torch
-import torch.nn.functional as F
 from scipy.spatial import cKDTree
-from utils.mesh import (
+from ddsp.utils.mesh import (
     laplacian_smooth,
     vert_normal
 )
-from utils.inflate import mris_inflate
-from utils.mesh import adjacency_matrix
+from ddsp.utils.inflate import mris_inflate
+from ddsp.utils.mesh import adjacency_matrix
 
 
 def metric_dilation(metric, face, roi=None, n_iters=10):

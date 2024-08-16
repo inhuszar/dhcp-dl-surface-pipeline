@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from utils.mesh import face_area
+from ddsp.utils.mesh import face_area
 
 
 def distortion(metric_sphere, metric_surf):

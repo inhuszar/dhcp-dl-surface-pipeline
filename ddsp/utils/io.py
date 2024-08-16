@@ -3,37 +3,20 @@ import nibabel as nib
 from nibabel.gifti import gifti
 import glob
 from xml.etree import ElementTree as et
-
-
-class Logging:
-    """
-    Inputs:
-    - subj_dir: prefix of the directory for the subject
-    - message: information to be logged
-    """
-    def __init__(self, subj_dir):
-        self.subj_dir = subj_dir
-        # clean the previous log
-        with open(subj_dir+'.log', 'w') as f:
-            f.write('')
-    def info(self, message, end='\n'):
-        print(message, end=end)
-        with open(self.subj_dir+'.log', 'a') as f:
-            f.write(message+end)
     
     
-def save_numpy_to_nifti(img, affine, save_dir):
+def save_numpy_to_nifti(img_data, affine, nifti_file):
     """
     Save numpy array to nifti image (.nii.gz).
     
     Inputs:
-    - img: image to be save, (D1,D2,D3) numpy.array 
+    - img_data: image to be save, (D1,D2,D3) numpy.array
     - affine: affine matrix, (4,4) numpy.array
-    - save_dir: directory for saving, string
+    - nifti_file: output file, string
     """
-    img_nib = nib.Nifti1Image(img, affine)
+    img_nib = nib.Nifti1Image(img_data, affine)
     img_nib.header['xyzt_units'] = 2
-    nib.save(img_nib, save_dir)
+    nib.save(img_nib, nifti_file)
 
 
 def save_gifti_surface(

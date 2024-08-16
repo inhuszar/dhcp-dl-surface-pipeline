@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import subprocess
 import nibabel as nib
-from utils.mesh import (
+from ddsp.utils.mesh import (
     area_weighted_smooth,
     vert_normal,
     mesh_area,
